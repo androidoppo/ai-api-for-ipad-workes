@@ -1,0 +1,17 @@
+{
+  "name": "ipad-llm-api-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenAI-compatible API server that dispatches inference jobs to iPad (WebGPU) browser workers running llama.cpp",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node scripts/e2e-test.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.23.0"
+  }
+}

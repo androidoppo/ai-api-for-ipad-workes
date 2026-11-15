@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>iPad LLM API — デモクライアント</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0b0f14; color: #d7e2ea; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; padding: 16px; max-width: 860px; margin-inline: auto; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 14px; color: #7b8a99; text-transform: uppercase; letter-spacing: .05em; margin-top: 24px; }
+  .panel { background: #131a22; border: 1px solid #1f2a36; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  input, button, select { font: inherit; background: #0d1218; color: #d7e2ea; border: 1px solid #2a3a4a; border-radius: 8px; padding: 8px 10px; }
+  input { flex: 1; min-width: 200px; }
+  button.primary { background: #1d4ed8; border: none; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #chat { height: 260px; overflow-y: auto; background: #0d1218; border-radius: 10px; padding: 12px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+  .meta { color: #7b8a99; font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1f2a36; }
+  code { background: #0d1218; padding: 2px 6px; border-radius: 6px; font-size: 12px; }
+  .ok { color: #4ade80; } .bad { color: #f87171; }
+</style>
+</head>
+<body>
+<h1>iPad LLM API — デモクライアント</h1>
+<p class="meta">OpenAI 互換 API の動作確認用。ワーカー(iPad)側は <a href="/worker" style="color:#60a5fa">/worker</a> を開いてください。</p>
+
+<div class="panel">
+  <h2>サーバー状態</h2>
+  <div id="status" class="meta">読み込み中…</div>
+</div>
+
+<div class="panel">
+  <h2>チャット</h2>
+  <div class="row">
+    <input id="model" placeholder='モデル (例: ggml-org/gemma-3-270m-it-Q4_K_M-GGUF または URL)。空欄で DEFAULT_MODEL' />
+  </div>
+  <div class="row">
+    <input id="lora" placeholder='LoRA (省略可): URL または org/repo/file.gguf、scale は "URL:0.8" 形式' />
+  </div>
+  <div class="row">
+    <input id="temp" type="number" step="0.1" min="0" max="2" value="0.7" style="max-width:90px" title="temperature" />
+    <input id="maxtok" type="number" min="1" max="2048" value="256" style="max-width:110px" title="max_tokens" />
+    <span class="meta" style="align-self:center">temperature / max_tokens</span>
+  </div>
+  <div class="row">
+    <input id="prompt" style="flex:1" placeholder="メッセージを入力 (Enter で送信)" value="日本語で、WebGPUについて2文で説明して。" />
+    <button id="send" class="primary">送信</button>
+  </div>
+  <div id="chat"></div>
+  <div class="meta" id="stats" style="margin-top:8px"></div>
+</div>
+
+<div class="panel">
+  <h2>curl 例</h2>
+  <code style="display:block;white-space:pre-wrap;font-size:11px">curl -N http://localhost:8080/v1/chat/completions \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "ggml-org/gemma-3-270m-it-Q4_K_M-GGUF",
+    "messages": [{"role":"user","content":"hello"}],
+    "stream": true,
+    "lora": [{"url": "https://example.com/my-adapter.gguf", "scale": 0.9}]
+  }'</code>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function refreshStatus() {
+  try {
+    const r = await fetch('/admin/status');
+    const s = await r.json();
+    const rows = s.workers.map((w) =>
+      `<tr><td>${w.id}</td><td>${w.state}</td><td>${w.caps?.webgpu ? '<span class="ok">WebGPU</span>' : 'CPU'}</td><td>${(w.loaded_model || 'none').split('/').pop()}</td><td>${w.last_seen_s_ago}s前</td></tr>`
+    ).join('') || '<tr><td colspan="5">ワーカーなし — iPad で /worker を開いてください</td></tr>';
+    $('status').innerHTML = `uptime ${s.uptime_s}s / 待ち ${s.queued_jobs} / 実行中 ${s.active_jobs}
+      <table style="margin-top:8px"><tr><th>worker</th><th>state</th><th>gpu</th><th>model</th><th>最終応答</th></tr>${rows}</table>`;
+  } catch {
+    $('status').textContent = '状態取得に失敗';
+  }
+}
+refreshStatus();
+setInterval(refreshStatus, 5000);
+
+async function send() {
+  const btn = $('send');
+  btn.disabled = true;
+  const chat = $('chat');
+  chat.textContent = '';
+  const body = {
+    messages: [{ role: 'user', content: $('prompt').value }],
+    stream: true,
+    temperature: parseFloat($('temp').value) || 0.7,
+    max_tokens: parseInt($('maxtok').value) || 256,
+  };
+  if ($('model').value.trim()) body.model = $('model').value.trim();
+  const loraRaw = $('lora').value.trim();
+  if (loraRaw) {
+    body.lora = loraRaw.split(',').map((s) => {
+      s = s.trim();
+      const m = s.match(/^(.*):(0?\.\d+)$/);
+      return m ? { url: m[1], scale: parseFloat(m[2]) } : s;
+    });
+  }
+  const t0 = performance.now();
+  let firstTok = 0, n = 0;
+  try {
+    const res = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      chat.textContent = `エラー ${res.status}: ${err.error?.message || res.statusText}`;
+      return;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') continue;
+        try {
+          const j = JSON.parse(data);
+          const d = j.choices?.[0]?.delta?.content || '';
+          if (d) {
+            if (!firstTok) firstTok = performance.now();
+            chat.textContent += d;
+            chat.scrollTop = chat.scrollHeight;
+            n++;
+          }
+        } catch {}
+      }
+    }
+    const total = (performance.now() - t0) / 1000;
+    const ttft = firstTok ? ((firstTok - t0) / 1000).toFixed(2) : '-';
+    $('stats').textContent = `受信 ${n} チャンク / TTFT ${ttft}s / 合計 ${total.toFixed(1)}s`;
+  } catch (e) {
+    chat.textContent += `\n[error] ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+$('send').onclick = send;
+$('prompt').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+</script>
+</body>
+</html>

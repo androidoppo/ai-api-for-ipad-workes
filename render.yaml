@@ -1,0 +1,18 @@
+# Render.com blueprint — deploy with "New > Blueprint" or `render.yaml` in repo root
+services:
+  - type: web
+    name: ipad-llm-api
+    runtime: node
+    plan: starter # free でも可(スピンダウンあり)。常時接続なら starter 以上を推奨
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: API_KEY
+        generateValue: true # クライアント用 API キー(自動生成)
+      - key: WORKER_TOKEN
+        generateValue: true # ワーカー(iPad)用トークン(自動生成)
+      - key: DEFAULT_MODEL
+        value: ggml-org/gemma-3-270m-it-Q4_K_M-GGUF
+      - key: N_CTX
+        value: "2048"
