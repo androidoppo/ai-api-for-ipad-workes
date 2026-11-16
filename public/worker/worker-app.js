@@ -184,6 +184,8 @@ function makeKey(modelUrl, loraList) {
 // ---------------------------------------------------------------------------
 let ws = null;
 let reconnectDelay = 1000;
+let reconnectTimer = null;
+let failCount = 0;
 let jobsDone = 0;
 const aborts = new Map(); // job_id -> AbortController
 
@@ -191,13 +193,38 @@ function send(obj) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
 }
 
+function scheduleReconnect() {
+  if (reconnectTimer) return; // already scheduled
+  log(`retrying in ${(reconnectDelay / 1000).toFixed(1)}s`);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+}
+
 function connect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  // never stack multiple connections
+  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const url = `${proto}://${location.host}/worker${WORKER_TOKEN ? `?token=${encodeURIComponent(WORKER_TOKEN)}` : ''}`;
-  ws = new WebSocket(url);
+  setWsState('connecting…', false);
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    failCount++;
+    scheduleReconnect();
+    return;
+  }
 
   ws.onopen = () => {
     reconnectDelay = 1000;
+    failCount = 0;
     setWsState('connected', true);
     send({
       type: 'hello',
@@ -212,13 +239,23 @@ function connect() {
     });
     log('connected to server');
   };
-  ws.onclose = () => {
-    setWsState('disconnected', false);
-    log(`connection lost, retrying in ${reconnectDelay / 1000}s`);
-    setTimeout(connect, reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+  ws.onclose = (ev) => {
+    setWsState(`disconnected (code ${ev.code})`, false);
+    failCount++;
+    // code 1006 = connection refused/abnormal. Typical causes:
+    //  - WORKER_TOKEN mismatch (missing/wrong ?token= in the URL)
+    //  - server sleeping (Render free plan) / network drop
+    if (!WORKER_TOKEN && failCount >= 3) {
+      log('接続が繰り返し拒否されています。サーバーで WORKER_TOKEN が設定されている場合、URL に ?token=... を付けてください');
+    } else if (failCount === 1) {
+      log(`connection lost (code ${ev.code})`);
+    }
+    scheduleReconnect();
   };
-  ws.onerror = () => ws.close();
+  ws.onerror = () => {
+    // don't close() here; a close event always follows an error.
+    // calling close() during CONNECTING throws and can kill the retry loop.
+  };
   ws.onmessage = (ev) => {
     let msg;
     try {
@@ -341,8 +378,12 @@ setInterval(() => {
 // the page alive while visible, and we detect suspension via visibilitychange
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    log('page visible again — reconnecting if needed');
-    if (!ws || ws.readyState > 1) connect();
+    // reconnect only when the socket is actually CLOSED (3).
+    // CONNECTING (0) / OPEN (1) / CLOSING (2) must not trigger a second socket.
+    if (!ws || ws.readyState === 3) {
+      log('page visible again — reconnecting');
+      scheduleReconnect();
+    }
   }
 });
 

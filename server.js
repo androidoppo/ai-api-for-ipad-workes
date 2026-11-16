@@ -464,7 +464,8 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET') {
     if (p === '/worker') {
-      res.writeHead(301, { location: '/worker/' });
+      // keep query string (token etc.) across the redirect
+      res.writeHead(301, { location: '/worker/' + url.search });
       return res.end();
     }
     return serveStatic(req, res, p);
