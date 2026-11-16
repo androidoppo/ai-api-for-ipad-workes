@@ -3,7 +3,7 @@ services:
   - type: web
     name: ipad-llm-api
     runtime: node
-    plan: starter # free でも可(スピンダウンあり)。常時接続なら starter 以上を推奨
+    plan: free # free でも可(スピンダウンあり)。常時接続なら starter 以上を推奨
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /healthz
